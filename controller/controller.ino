@@ -1,4 +1,9 @@
-/* Controller for RF Modulator
+/* Controller for MC44BS373CA RF Modulator
+ *  by Nick Schollar
+ *  For ATmega328 running Arduino bootloader
+ *  
+ *  Updates:
+ *  May 2023: Added EEPROM save functionality
  * 
  * Connections required:
  * I2C: A4 and A5
@@ -7,8 +12,6 @@
  */
 
 #include <AceButton.h>
-#include <AdjustableButtonConfig.h>
-#include <ButtonConfig.h>
 using namespace ace_button;
 #include <Wire.h>
 #include <LiquidCrystal.h>
@@ -16,6 +19,18 @@ using namespace ace_button;
 #define buttonFPin A0
 #define buttonUPin A2
 #define buttonDPin A1
+
+// Address in EEPROM where the settings will be saved
+#define CURRENTSETTINGS_ADDRESS 0
+#define EEPROM_HEADER ((uint16_t)0x4E45)
+
+// Settings struct definition for settings which will be saved to EEPROM
+typedef struct
+{
+  uint8_t testPatternEnable;
+  uint8_t standard;
+  uint32_t frequencyTimes100;
+} settings_t;
 
 ButtonConfig FConfig;
 ButtonConfig UDConfig;
@@ -35,9 +50,12 @@ uint8_t standards[] = {'M','B','I','D'};
 uint8_t function = fnIdle;
 uint8_t fnCursorPositions[] = {16,2,14,15};
 
-uint8_t testPatternEnable = 1;
-uint8_t standard = 2;                 // 0 = M, 1 = BG, 2 = I, 3 = DK
-uint32_t frequencyTimes100 = 47125;   // Set default channel
+settings_t currentSettings =
+{
+  1,                 // 0 = Test pattern disable, 1 = test pattern enable
+  2,                 // 0 = M, 1 = BG, 2 = I, 3 = DK
+  47125   // Set default channel
+};
 
 uint8_t frequencyDivisor = 0;
 #define frequencyDivisorPow (1 << frequencyDivisor)
@@ -45,7 +63,8 @@ uint8_t frequencyDivisor = 0;
 #define frequencyIncrementM 800
 #define frequencyIncrementL 700
 
-void setup() {
+void setup()
+{
   FConfig.setEventHandler(handleFEvent);
   FConfig.setFeature(ButtonConfig::kFeatureLongPress);
   FConfig.setFeature(ButtonConfig::kFeatureSuppressAfterLongPress);
@@ -65,18 +84,32 @@ void setup() {
   lcd.begin(16,1);
   lcd.cursor();
 
+  if (!digitalRead(buttonFPin))
+  {
+    // If function button is pressed, skip settings load
+    lcd.setCursor(0,0);
+    lcd.print("Config not read.");
+    delay(1000);
+  }
+  else
+  {
+    currentSettings_load();
+  }
+
   Wire.begin();
   writeConfig();
 }
 
-void loop() {
+void loop()
+{
   buttonF.check();
   buttonU.check();
   buttonD.check();
 }
 
 void handleFEvent(AceButton* button, uint8_t eventType,
-    uint8_t /* buttonState */) {
+    uint8_t /* buttonState */)
+{
   switch (eventType) {
     case AceButton::kEventReleased:
       if (function == fnChannel) {
@@ -93,6 +126,11 @@ void handleFEvent(AceButton* button, uint8_t eventType,
         function = fnChannel;
       } else {
         function = fnIdle;
+        currentSettings_save();
+        lcd.setCursor(0,0);
+        lcd.print("Config saved.   ");
+        delay(1000);
+        writeConfig();
       }
       lcd.setCursor(fnCursorPositions[function],0);
       break;
@@ -100,7 +138,8 @@ void handleFEvent(AceButton* button, uint8_t eventType,
 }
 
 void handleUDEvent(AceButton* button, uint8_t eventType,
-    uint8_t /* buttonState */) {
+    uint8_t /* buttonState */)
+{
   switch (eventType) {
     case AceButton::kEventPressed:
     case AceButton::kEventRepeatPressed: {
@@ -111,10 +150,10 @@ void handleUDEvent(AceButton* button, uint8_t eventType,
             incrementFrequency();
             writeConfig();
           } else if (function == fnStandard) {
-            standard = (standard + 1) & 3;
+            currentSettings.standard = (currentSettings.standard + 1) & 3;
             writeConfig();
           } else if (function == fnTestPattern) {
-            testPatternEnable = testPatternEnable ^ 1;
+            currentSettings.testPatternEnable = currentSettings.testPatternEnable ^ 1;
             writeConfig();
           }
           break;
@@ -123,10 +162,10 @@ void handleUDEvent(AceButton* button, uint8_t eventType,
             decrementFrequency();
             writeConfig();
           } else if (function == fnStandard) {
-            standard = (standard - 1) & 3;
+            currentSettings.standard = (currentSettings.standard - 1) & 3;
             writeConfig();
           } else if (function == fnTestPattern) {
-            testPatternEnable = testPatternEnable ^ 1;
+            currentSettings.testPatternEnable = currentSettings.testPatternEnable ^ 1;
             writeConfig();
           }
           break;
@@ -135,58 +174,62 @@ void handleUDEvent(AceButton* button, uint8_t eventType,
   }
 }
 
-void incrementFrequency() {
-  if (frequencyTimes100 < uint32_t(102325) && (frequencyTimes100 >= uint32_t(30325))) {
-    frequencyTimes100 += uint32_t(frequencyIncrementM);
-  } else if (frequencyTimes100 < uint32_t(102325) && (frequencyTimes100 >= uint32_t(29425))) {
-    frequencyTimes100 += uint32_t(frequencyIncrementH);
-  } else if (frequencyTimes100 < uint32_t(102325) && (frequencyTimes100 >= uint32_t(10525))) {
-    frequencyTimes100 += uint32_t(frequencyIncrementL);
-  } else if (frequencyTimes100 < uint32_t(102325) && (frequencyTimes100 >= uint32_t(9725))) {
-    frequencyTimes100 += uint32_t(frequencyIncrementM);
-  } else if (frequencyTimes100 < uint32_t(102325)) {
-    frequencyTimes100 += uint32_t(frequencyIncrementL);
+void incrementFrequency()
+{
+  if (currentSettings.frequencyTimes100 < uint32_t(102325) && (currentSettings.frequencyTimes100 >= uint32_t(30325))) {
+    currentSettings.frequencyTimes100 += uint32_t(frequencyIncrementM);
+  } else if (currentSettings.frequencyTimes100 < uint32_t(102325) && (currentSettings.frequencyTimes100 >= uint32_t(29425))) {
+    currentSettings.frequencyTimes100 += uint32_t(frequencyIncrementH);
+  } else if (currentSettings.frequencyTimes100 < uint32_t(102325) && (currentSettings.frequencyTimes100 >= uint32_t(10525))) {
+    currentSettings.frequencyTimes100 += uint32_t(frequencyIncrementL);
+  } else if (currentSettings.frequencyTimes100 < uint32_t(102325) && (currentSettings.frequencyTimes100 >= uint32_t(9725))) {
+    currentSettings.frequencyTimes100 += uint32_t(frequencyIncrementM);
+  } else if (currentSettings.frequencyTimes100 < uint32_t(102325)) {
+    currentSettings.frequencyTimes100 += uint32_t(frequencyIncrementL);
   } else {
-    frequencyTimes100 = 4125;
+    currentSettings.frequencyTimes100 = 4125;
   }
   
   setFrequencyDivider();
 }
 
-void decrementFrequency() {
-  if (frequencyTimes100 > uint32_t(30325)) {
-    frequencyTimes100 -= frequencyIncrementM;
-  } else if (frequencyTimes100 > uint32_t(29425)) {
-    frequencyTimes100 -= frequencyIncrementH;
-  } else if (frequencyTimes100 > uint32_t(10525)) {
-    frequencyTimes100 -= frequencyIncrementL;
-  } else if (frequencyTimes100 > uint32_t(9725)) {
-    frequencyTimes100 -= frequencyIncrementM;
-  } else if (frequencyTimes100 > uint32_t(4125)) {
-    frequencyTimes100 -= frequencyIncrementL;
+void decrementFrequency()
+{
+  if (currentSettings.frequencyTimes100 > uint32_t(30325)) {
+    currentSettings.frequencyTimes100 -= frequencyIncrementM;
+  } else if (currentSettings.frequencyTimes100 > uint32_t(29425)) {
+    currentSettings.frequencyTimes100 -= frequencyIncrementH;
+  } else if (currentSettings.frequencyTimes100 > uint32_t(10525)) {
+    currentSettings.frequencyTimes100 -= frequencyIncrementL;
+  } else if (currentSettings.frequencyTimes100 > uint32_t(9725)) {
+    currentSettings.frequencyTimes100 -= frequencyIncrementM;
+  } else if (currentSettings.frequencyTimes100 > uint32_t(4125)) {
+    currentSettings.frequencyTimes100 -= frequencyIncrementL;
   } else {
-    frequencyTimes100 = uint32_t(102325);
+    currentSettings.frequencyTimes100 = uint32_t(102325);
   }
   
   setFrequencyDivider();
 }
 
-void setFrequencyDivider() {
-  if (frequencyTimes100 > uint32_t(42325)) {
+void setFrequencyDivider()
+{
+  if (currentSettings.frequencyTimes100 > uint32_t(42325)) {
     frequencyDivisor = 0;
-  } else if (frequencyTimes100 > uint32_t(21025)) {
+  } else if (currentSettings.frequencyTimes100 > uint32_t(21025)) {
     frequencyDivisor = 1;
-  } else if (frequencyTimes100 > uint32_t(10525)) {
+  } else if (currentSettings.frequencyTimes100 > uint32_t(10525)) {
     frequencyDivisor = 2;
-  } else if (frequencyTimes100 >= uint32_t(4125)) {
+  } else if (currentSettings.frequencyTimes100 >= uint32_t(4125)) {
     frequencyDivisor = 3;
   } else {
     frequencyDivisor = 4;
   }
 }
 
-void writeConfig() {
-  writeConfig(0,0,0,frequencyDivisor,0,0,0,0,standard,0,testPatternEnable,frequencyTimes100);
+void writeConfig()
+{
+  writeConfig(0,0,0,frequencyDivisor,0,0,0,0,currentSettings.standard,0,currentSettings.testPatternEnable,currentSettings.frequencyTimes100);
 }
 
 void writeConfig(
@@ -253,8 +296,8 @@ void writeConfig(
   lcd.write(' ');
   lcd.write(frequencyDivisorPow + 48);
   lcd.write(' ');
-  lcd.write(standards[standard]);
-  lcd.write(testPatternEnable ? 'T' : ' ');
+  lcd.write(standards[SFD]);
+  lcd.write(TPEN ? 'T' : ' ');
 
   lcd.setCursor(fnCursorPositions[function],0);
   
@@ -271,7 +314,8 @@ void writeConfig(
   writeConfigRaw(C1,C0,FM,FL);
 }
 
-void writeConfigRaw(uint8_t C1, uint8_t C0, uint8_t FM, uint8_t FL) {
+void writeConfigRaw(uint8_t C1, uint8_t C0, uint8_t FM, uint8_t FL)
+{
   Wire.beginTransmission(0xCA >> 1);
   Wire.write(C1);
   Wire.write(C0);
@@ -280,3 +324,66 @@ void writeConfigRaw(uint8_t C1, uint8_t C0, uint8_t FM, uint8_t FL) {
   Wire.endTransmission();
 }
 
+// Save the currentSettings struct to EEPROM
+// Format: [2-byte header][currentSettings struct][2-byte checksum]
+uint16_t currentSettings_save()
+{
+  uint16_t checksum = 0;
+  byte *p;
+
+  // Calculate checksum
+  p = (byte*)&currentSettings;
+  // Iterate through bytes in the settings struct
+  for (uint16_t i = 0; i < sizeof(currentSettings); i++)
+  {
+    // Add value of current byte in settings struct to checksum
+    checksum += p[i];
+  }
+
+  // write header before struct
+  eeprom_write_word((uint16_t*)(CURRENTSETTINGS_ADDRESS), EEPROM_HEADER);
+  // write settings struct to EEPROM
+  eeprom_write_block((const void*)&currentSettings, (void*)(CURRENTSETTINGS_ADDRESS + sizeof(EEPROM_HEADER)), sizeof(currentSettings));
+  // write checksum after struct
+  eeprom_write_word((uint16_t*)(CURRENTSETTINGS_ADDRESS + sizeof(EEPROM_HEADER) + sizeof(currentSettings)), checksum);
+  
+  return sizeof(currentSettings);
+}
+
+// Read the currentSettings struct from EEPROM
+uint8_t currentSettings_load(void)
+{
+  uint16_t eepromHeaderTemp = 0;
+  settings_t currentSettings_tmp;
+  uint16_t checksum = 0;
+  uint16_t checksumCalc = 0;
+  byte *p;
+  uint8_t retval;
+
+  // read header word
+  eepromHeaderTemp = eeprom_read_word((const uint16_t*)(CURRENTSETTINGS_ADDRESS));
+  // read settings struct from EEPROM into temporary struct
+  eeprom_read_block((void*)&currentSettings_tmp, (void*)(CURRENTSETTINGS_ADDRESS + sizeof(EEPROM_HEADER)), sizeof(currentSettings));
+  // read checksum
+  checksum = eeprom_read_word((const uint16_t*)(CURRENTSETTINGS_ADDRESS + sizeof(EEPROM_HEADER) + sizeof(currentSettings)));
+
+  // calculate checksum from read settings struct
+  p = (byte*)&currentSettings_tmp;
+  for(uint16_t i = 0; i < sizeof(currentSettings); i++)
+  {
+    checksumCalc += p[i];
+  }
+
+  // compare calculated checksum with read checksum
+  if(checksum == checksumCalc && eepromHeaderTemp == EEPROM_HEADER)
+  {
+    // Copy read settings to live settings struct if checksum matches
+    currentSettings = currentSettings_tmp;
+    retval = 0;
+  }
+  else
+  {
+    retval = 1;
+  }
+  
+}
