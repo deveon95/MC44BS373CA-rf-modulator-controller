@@ -16,6 +16,7 @@ using namespace ace_button;
 #include <Wire.h>
 #include <LiquidCrystal.h>
 
+// Pin assignments for the three buttons
 #define buttonFPin A0
 #define buttonUPin A2
 #define buttonDPin A1
@@ -40,6 +41,7 @@ AceButton buttonD(&UDConfig);
 void handleFEvent(AceButton*, uint8_t, uint8_t);
 void handleUDEvent(AceButton*, uint8_t, uint8_t);
 
+// Set I/O pins for the HD44780-compatible LCD
 LiquidCrystal lcd(2,3,4,5,6,7);
 
 #define fnIdle 0
@@ -54,7 +56,7 @@ settings_t currentSettings =
 {
   1,                 // 0 = Test pattern disable, 1 = test pattern enable
   2,                 // 0 = M, 1 = BG, 2 = I, 3 = DK
-  47125   // Set default channel
+  47125              // Set default channel
 };
 
 uint8_t frequencyDivisor = 0;
@@ -84,6 +86,7 @@ void setup()
   lcd.begin(16,1);
   lcd.cursor();
 
+  // Load settings from EEPROM
   if (!digitalRead(buttonFPin))
   {
     // If function button is pressed, skip settings load
@@ -107,6 +110,7 @@ void loop()
   buttonD.check();
 }
 
+// Event handler for Function button
 void handleFEvent(AceButton* button, uint8_t eventType,
     uint8_t /* buttonState */)
 {
@@ -137,6 +141,7 @@ void handleFEvent(AceButton* button, uint8_t eventType,
   }
 }
 
+// Event handler for up and down buttons
 void handleUDEvent(AceButton* button, uint8_t eventType,
     uint8_t /* buttonState */)
 {
@@ -174,6 +179,7 @@ void handleUDEvent(AceButton* button, uint8_t eventType,
   }
 }
 
+// Increment frequency by one channel space
 void incrementFrequency()
 {
   if (currentSettings.frequencyTimes100 < uint32_t(102325) && (currentSettings.frequencyTimes100 >= uint32_t(30325))) {
@@ -193,6 +199,7 @@ void incrementFrequency()
   setFrequencyDivider();
 }
 
+// Decrement frequency by one channel space
 void decrementFrequency()
 {
   if (currentSettings.frequencyTimes100 > uint32_t(30325)) {
@@ -212,6 +219,7 @@ void decrementFrequency()
   setFrequencyDivider();
 }
 
+// Select PLL divier to use according to the frequency
 void setFrequencyDivider()
 {
   if (currentSettings.frequencyTimes100 > uint32_t(42325)) {
@@ -227,11 +235,13 @@ void setFrequencyDivider()
   }
 }
 
+// Write configuration to modulator using global variables
 void writeConfig()
 {
   writeConfig(0,0,0,frequencyDivisor,0,0,0,0,currentSettings.standard,0,currentSettings.testPatternEnable,currentSettings.frequencyTimes100);
 }
 
+// Calculate raw configuration bytes, display configuration on LCD, and write configuration to modulator
 void writeConfig(
   uint8_t SO, 
   uint8_t LOP, 
@@ -300,7 +310,8 @@ void writeConfig(
   lcd.write(TPEN ? 'T' : ' ');
 
   lcd.setCursor(fnCursorPositions[function],0);
-  
+
+  // Calculate raw configuration bytes
   uint8_t C1;
   uint8_t C0;
   uint8_t FM;
@@ -311,9 +322,12 @@ void writeConfig(
         ((SFD & 3) << 3) | ((SREF & 1) << 2) | ((X & B110000) >> 4);
   FM = ((TPEN & 1) << 6) | (uint8_t(0B111111 & (uint16_t(frequencyBits) >> 6)));
   FL = ((frequencyBits & B111111) << 2) | (X & 3);
+
+  // Write to modulator
   writeConfigRaw(C1,C0,FM,FL);
 }
 
+// Write raw configuration bytes to modulator
 void writeConfigRaw(uint8_t C1, uint8_t C0, uint8_t FM, uint8_t FL)
 {
   Wire.beginTransmission(0xCA >> 1);
